@@ -1,0 +1,181 @@
+Program.cs:
+
+using Microsoft.EntityFrameworkCore;
+using TSM.Data;
+
+internal class Program
+{
+    private static void Main(string[] args)
+    {
+        var builder = WebApplication.CreateBuilder(args);
+
+        builder.Services.AddControllers();
+        builder.Services.AddEndpointsApiExplorer();
+        builder.Services.AddSwaggerGen();
+        builder.Services.AddDbContext<TaskDbContext>(options => options.UseInMemoryDatabase("TaskDb"));
+
+        var app = builder.Build();
+
+        //if (app.Environment.IsDevelopment())
+        {
+            app.UseSwagger();
+            app.UseSwaggerUI();
+        }
+
+        // Comment out or remove this line to disable HTTPS redirection
+        // app.UseHttpsRedirection();
+
+        app.UseAuthorization();
+        app.MapControllers();
+        app.Run();
+    }
+}
+
+TaskController.cs:
+
+using CsvHelper;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
+using System.Globalization;
+using System.Text;
+using TSM.Data;
+using TSM.Models;
+
+namespace TaskManagementAPI.Controllers
+{
+    [Route("api/[controller]")]
+    [ApiController]
+    public class TasksController : ControllerBase
+    {
+        private readonly TaskDbContext _context;
+
+        public TasksController(TaskDbContext context, ILogger<TasksController> @object)
+        {
+            _context = context;
+        }
+
+        // GET /tasks
+        [HttpGet]
+        public async Task<IActionResult> GetTasks([FromQuery] TSM.Models.TaskStatus? status, [FromQuery] DateTime? dueDate, [FromQuery] int page = 1, [FromQuery] int pageSize = 10)
+        {
+            var query = _context.Tasks.AsQueryable();
+
+            if (status.HasValue)
+                query = query.Where(t => t.Status == status.Value);
+
+            if (dueDate.HasValue)
+                query = query.Where(t => t.DueDate <= dueDate);
+
+            // Log the query count before paging to check if task 5 is there
+            var totalCount = await query.CountAsync();
+            Console.WriteLine($"Total tasks before paging: {totalCount}");
+
+            var tasks = await query
+                .Skip((page - 1) * pageSize)
+                .Take(pageSize)
+                .ToListAsync();
+
+            return Ok(tasks);
+        }
+
+
+
+        [HttpGet("{id}")]
+        public async Task<IActionResult> GetTaskById(int id)
+        {
+            var task = await _context.Tasks.FindAsync(id);
+            if (task == null)
+                return NotFound(new { message = "Task not found" });
+
+            return Ok(task);
+
+        }
+        [HttpPost]
+        public async Task<IActionResult> CreateTask([FromBody] TaskEntity task)
+        {
+            if (!ModelState.IsValid)
+                return BadRequest(ModelState);
+
+            _context.Tasks.Add(task);
+            await _context.SaveChangesAsync();
+
+            return CreatedAtAction(nameof(GetTaskById), new { id = task.Id }, task);
+        }
+
+
+        [HttpPut("{id}")]
+        public async Task<IActionResult> UpdateTask(int id, [FromBody] TaskEntity updatedTask)
+        {
+            if (id != updatedTask.Id)
+                return BadRequest(new { message = "Task ID mismatch" });
+
+            var task = await _context.Tasks.FindAsync(id);
+            if (task == null)
+                return NotFound(new { message = "Task not found" });
+
+            task.Title = updatedTask.Title;
+            task.Description = updatedTask.Description;
+            task.Status = updatedTask.Status;
+            task.DueDate = updatedTask.DueDate;
+
+            await _context.SaveChangesAsync();
+            return NoContent();
+        }
+        [HttpDelete("{id}")]
+        public async Task<IActionResult> DeleteTask(int id)
+        {
+            var task = await _context.Tasks.FindAsync(id);
+            if (task == null)
+                return NotFound(new { message = "Task not found" });
+
+            _context.Tasks.Remove(task);
+            await _context.SaveChangesAsync();
+
+            return NoContent();
+        }
+        [HttpGet("export")]
+        public async Task<IActionResult> ExportTasks()
+        {
+            var tasks = await _context.Tasks.ToListAsync();
+
+            using (var writer = new StringWriter())
+            using (var csv = new CsvWriter(writer, CultureInfo.InvariantCulture))
+            {
+                csv.WriteRecords(tasks);
+                var csvContent = writer.ToString();
+
+                var fileName = "tasks.csv";
+                var byteArray = Encoding.ASCII.GetBytes(csvContent);
+                var fileStream = new MemoryStream(byteArray);
+
+                return File(fileStream, "text/csv", fileName);
+            }
+        }
+
+
+
+    }
+}
+
+TaskEntity.cs:
+
+namespace TSM.Models
+{
+    public enum TaskStatus
+    {
+        Pending,
+        InProgress,
+        Completed
+    }
+
+    public class TaskEntity
+    {
+        public int Id { get; set; }
+        public string Title { get; set; } = string.Empty;
+        public string? Description { get; set; }
+        public TaskStatus Status { get; set; } = TaskStatus.Pending;
+        public DateTime DueDate { get; set; }
+    }
+
+}
+
